@@ -82,3 +82,16 @@ def test_mask_skips_quoted_closers_inside_a_tag():
     masked = mask(source)
     assert masked.text.endswith("\nselect 1")
     assert [tag.kind for tag in masked.tags] == ["expr"]
+
+
+def test_a_cte_that_only_selects_columns_from_a_ref_is_an_import():
+    found = units(
+        "with a as (select x, y as z from {{ ref('r') }}),\n"
+        "b as (select * from {{ source('s', 't') }}),\n"
+        "c as (select x from {{ ref('r') }} where x > 1),\n"
+        "d as (select x from a)\n"
+        "select * from d"
+    )
+    assert [(u.name, u.kind) for u in found] == [
+        ("a", "import"), ("b", "import"), ("c", "cte"), ("d", "cte"), ("main", "main")
+    ]

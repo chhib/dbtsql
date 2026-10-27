@@ -1,6 +1,8 @@
 """The scored units of a dbt SQL file, and their cyclomatic complexity.
 
 A model's units are its top-level CTEs and the final select, named `main`.
+A CTE that only selects plain columns from one `ref` or `source` is an
+`import` CTE: it holds no logic, so dryer does not compare it.
 A model without CTEs is one `main`. A file that defines Jinja macros, tests,
 or materializations has one unit per definition instead.
 
@@ -34,7 +36,7 @@ class Unit:
     """One scored unit. Offsets are character offsets; `end` is exclusive."""
 
     name: str
-    kind: str  # "cte", "main", or "macro"
+    kind: str  # "cte", "import", "main", or "macro"
     start: int
     end: int
     start_line: int
@@ -145,6 +147,19 @@ def _cte_end(tokens: list[Token], index: int) -> int | None:
     return None
 
 
+_IMPORT_TOKENS = {"SELECT", "VAR", "IDENTIFIER", "COMMA", "DOT", "STAR", "ALIAS", "FROM"}
+
+
+def _is_import(tokens: list[Token]) -> bool:
+    """`name as ( select a, b as c from {{ ref('x') }} )` and nothing more."""
+
+    opening = next(index for index, token in enumerate(tokens) if token.type == "L_PAREN")
+    body = tokens[opening + 1 : -1]
+    sources = [token for token in body if token.jinja]
+    plain = all(token.jinja or token.type in _IMPORT_TOKENS for token in body)
+    return plain and len(sources) == 1 and body[-1].jinja
+
+
 def _ctes(parsed: Parsed, tokens: list[Token]) -> tuple[list[Unit], int]:
     """Top-level CTEs, and the index of the first token after them."""
 
@@ -159,7 +174,9 @@ def _ctes(parsed: Parsed, tokens: list[Token]) -> tuple[list[Unit], int]:
         end = _cte_end(tokens, index)
         if end is None:
             break
-        found.append(_unit(parsed, name.text, "cte", name.start, tokens[end].end))
+        span = [t for t in parsed.tokens or [] if name.start <= t.start < tokens[end].end]
+        kind = "import" if _is_import(span) else "cte"
+        found.append(_unit(parsed, name.text, kind, name.start, tokens[end].end))
         index = end + 1
         if index < len(tokens) and tokens[index].type == "COMMA":
             index += 1
